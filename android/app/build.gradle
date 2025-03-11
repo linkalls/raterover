@@ -9,6 +9,7 @@ android {
     namespace = "com.potetotown.raterover"
     compileSdk = flutter.compileSdkVersion
     // ndkVersion = flutter.ndkVersion
+    //* ここ上だめ
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
