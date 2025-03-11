@@ -1,14 +1,27 @@
-import 'package:flutter/material.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:intl/intl.dart';
-import 'package:http/http.dart' as http;
-import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:convert';
 
-void main() {
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:http/http.dart' as http;
+import 'package:intl/intl.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  final prefs = await SharedPreferences.getInstance();
+  final lastFromCurrency = prefs.getString('lastFromCurrency') ?? 'USD';
+  final lastToCurrency = prefs.getString('lastToCurrency') ?? 'JPY';
+
   runApp(
-    const ProviderScope(
-      child: MyApp(),
+    ProviderScope(
+      overrides: [
+        selectedFromCurrencyProvider
+            .overrideWith((ref) => lastFromCurrency),
+        selectedToCurrencyProvider
+            .overrideWith((ref) => lastToCurrency),
+      ],
+      child: const MyApp(),
     ),
   );
 }
@@ -34,14 +47,16 @@ final selectedFromCurrencyProvider = StateProvider<String>((ref) => 'USD');
 final selectedToCurrencyProvider = StateProvider<String>((ref) => 'JPY');
 final amountProvider = StateProvider<double>((ref) => 0.0);
 
-final exchangeRatesProvider = StateNotifierProvider<ExchangeRatesNotifier, Map<String, double>>((ref) {
+final exchangeRatesProvider =
+    StateNotifierProvider<ExchangeRatesNotifier, Map<String, double>>((ref) {
   return ExchangeRatesNotifier(ref);
 });
 
 class ExchangeRatesNotifier extends StateNotifier<Map<String, double>> {
   final Ref ref;
-  static const baseUrl = 'https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1';
-  
+  static const baseUrl =
+      'https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1';
+
   ExchangeRatesNotifier(this.ref) : super({}) {
     loadRates();
   }
@@ -56,7 +71,9 @@ class ExchangeRatesNotifier extends StateNotifier<Map<String, double>> {
       final now = DateTime.now();
       if (now.difference(lastUpdateDate).inDays < 1) {
         state = Map<String, double>.from(
-          json.decode(savedRates).map((key, value) => MapEntry(key, value.toDouble()))
+          json
+              .decode(savedRates)
+              .map((key, value) => MapEntry(key, value.toDouble())),
         );
         return;
       }
@@ -69,17 +86,19 @@ class ExchangeRatesNotifier extends StateNotifier<Map<String, double>> {
     try {
       debugPrint('Fetching exchange rates from API...');
       final fromCurrency = ref.read(selectedFromCurrencyProvider).toLowerCase();
-      final response = await http.get(Uri.parse('$baseUrl/currencies/$fromCurrency.json'));
+      final response = await http.get(
+        Uri.parse('$baseUrl/currencies/$fromCurrency.json'),
+      );
       debugPrint('API Response status: ${response.statusCode}');
-      
+
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
         debugPrint('API Response data: ${json.encode(data)}');
         final rates = data[fromCurrency] as Map<String, dynamic>;
-        
+
         final newRates = <String, double>{};
         newRates[fromCurrency.toUpperCase()] = 1.0;
-        
+
         for (final targetCurrency in currencyNames.keys) {
           final rate = rates[targetCurrency.toLowerCase()];
           if (rate is num) {
@@ -109,7 +128,7 @@ class MyApp extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final themeMode = ref.watch(themeProvider);
-    
+
     return MaterialApp(
       title: 'Currency Calculator',
       themeMode: themeMode,
@@ -135,15 +154,31 @@ class MyApp extends ConsumerWidget {
 class CurrencyCalculatorPage extends ConsumerWidget {
   const CurrencyCalculatorPage({super.key});
 
-  double convertCurrency(double amount, String from, String to, Map<String, double> rates, WidgetRef ref) {
+  bool _hasFullWidthNumber(String text) {
+    return text.contains(RegExp(r'[０-９]'));
+  }
+
+  Future<void> _saveCurrencyPreferences(String from, String to) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('lastFromCurrency', from);
+    await prefs.setString('lastToCurrency', to);
+  }
+
+  double convertCurrency(
+    double amount,
+    String from,
+    String to,
+    Map<String, double> rates,
+    WidgetRef ref,
+  ) {
     if (rates.isEmpty) {
       debugPrint('No rates available, returning original amount');
       return amount;
     }
-    
+
     debugPrint('Converting $amount $from to $to');
     debugPrint('Available rates: $rates');
-    
+
     if (from != rates.keys.first) {
       ref.read(exchangeRatesProvider.notifier).fetchLatestRates();
       return amount;
@@ -164,7 +199,13 @@ class CurrencyCalculatorPage extends ConsumerWidget {
     final themeMode = ref.watch(themeProvider);
     final rates = ref.watch(exchangeRatesProvider);
 
-    final convertedAmount = convertCurrency(amount, fromCurrency, toCurrency, rates, ref);
+    final convertedAmount = convertCurrency(
+      amount,
+      fromCurrency,
+      toCurrency,
+      rates,
+      ref,
+    );
     final numberFormat = NumberFormat('#,##0.00');
 
     return Scaffold(
@@ -176,8 +217,8 @@ class CurrencyCalculatorPage extends ConsumerWidget {
               themeMode == ThemeMode.dark ? Icons.light_mode : Icons.dark_mode,
             ),
             onPressed: () {
-              ref.read(themeProvider.notifier).state = 
-                themeMode == ThemeMode.dark ? ThemeMode.light : ThemeMode.dark;
+              ref.read(themeProvider.notifier).state =
+                  themeMode == ThemeMode.dark ? ThemeMode.light : ThemeMode.dark;
             },
           ),
         ],
@@ -195,13 +236,22 @@ class CurrencyCalculatorPage extends ConsumerWidget {
                     TextField(
                       keyboardType: TextInputType.number,
                       decoration: InputDecoration(
-                        labelText: '金額を入力',
+                        labelText: '金額を入力（半角数字）',
                         border: const OutlineInputBorder(),
                         suffixText: fromCurrency,
                       ),
                       onChanged: (value) {
-                        ref.read(amountProvider.notifier).state = 
-                          double.tryParse(value) ?? 0.0;
+                        if (_hasFullWidthNumber(value)) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text('全角数字は使用できません。半角数字で入力してください。'),
+                              duration: Duration(seconds: 2),
+                            ),
+                          );
+                          return;
+                        }
+                        ref.read(amountProvider.notifier).state =
+                            double.tryParse(value) ?? 0.0;
                       },
                     ),
                     const SizedBox(height: 16),
@@ -217,13 +267,20 @@ class CurrencyCalculatorPage extends ConsumerWidget {
                             items: currencyNames.keys.map((currency) {
                               return DropdownMenuItem(
                                 value: currency,
-                                child: Text('$currency (${currencyNames[currency]})'),
+                                child: Text(
+                                  '$currency (${currencyNames[currency]})',
+                                ),
                               );
                             }).toList(),
                             onChanged: (value) {
                               if (value != null) {
-                                ref.read(selectedFromCurrencyProvider.notifier).state = value;
-                                ref.read(exchangeRatesProvider.notifier).fetchLatestRates();
+                                ref
+                                    .read(selectedFromCurrencyProvider.notifier)
+                                    .state = value;
+                                ref
+                                    .read(exchangeRatesProvider.notifier)
+                                    .fetchLatestRates();
+                                _saveCurrencyPreferences(value, toCurrency);
                               }
                             },
                           ),
@@ -233,10 +290,17 @@ class CurrencyCalculatorPage extends ConsumerWidget {
                           icon: const Icon(Icons.swap_horiz),
                           onPressed: () {
                             final temp = ref.read(selectedFromCurrencyProvider);
-                            ref.read(selectedFromCurrencyProvider.notifier).state = 
-                              ref.read(selectedToCurrencyProvider);
-                            ref.read(selectedToCurrencyProvider.notifier).state = temp;
-                            ref.read(exchangeRatesProvider.notifier).fetchLatestRates();
+                            final newTo = ref.read(selectedToCurrencyProvider);
+                            ref
+                                .read(selectedFromCurrencyProvider.notifier)
+                                .state = newTo;
+                            ref
+                                .read(selectedToCurrencyProvider.notifier)
+                                .state = temp;
+                            ref
+                                .read(exchangeRatesProvider.notifier)
+                                .fetchLatestRates();
+                            _saveCurrencyPreferences(newTo, temp);
                           },
                         ),
                         const SizedBox(width: 16),
@@ -250,12 +314,17 @@ class CurrencyCalculatorPage extends ConsumerWidget {
                             items: currencyNames.keys.map((currency) {
                               return DropdownMenuItem(
                                 value: currency,
-                                child: Text('$currency (${currencyNames[currency]})'),
+                                child: Text(
+                                  '$currency (${currencyNames[currency]})',
+                                ),
                               );
                             }).toList(),
                             onChanged: (value) {
                               if (value != null) {
-                                ref.read(selectedToCurrencyProvider.notifier).state = value;
+                                ref
+                                    .read(selectedToCurrencyProvider.notifier)
+                                    .state = value;
+                                _saveCurrencyPreferences(fromCurrency, value);
                               }
                             },
                           ),
@@ -280,19 +349,56 @@ class CurrencyCalculatorPage extends ConsumerWidget {
                       ),
                     ),
                     const SizedBox(height: 8),
-                    Text(
-                      '${numberFormat.format(convertedAmount)} $toCurrency',
-                      style: const TextStyle(
-                        fontSize: 24,
-                        fontWeight: FontWeight.bold,
+                    InkWell(
+                      onTap: () {
+                        final result =
+                            '${numberFormat.format(convertedAmount)} $toCurrency';
+                        Clipboard.setData(ClipboardData(text: result));
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text('計算結果をコピーしました！'),
+                            duration: Duration(seconds: 2),
+                          ),
+                        );
+                      },
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Text(
+                            '${numberFormat.format(convertedAmount)} $toCurrency',
+                            style: const TextStyle(
+                              fontSize: 24,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          const Icon(Icons.copy, size: 20),
+                        ],
                       ),
                     ),
                     const SizedBox(height: 8),
-                    Text(
-                      '1 $fromCurrency = ${numberFormat.format(convertCurrency(1, fromCurrency, toCurrency, rates, ref))} $toCurrency',
-                      style: const TextStyle(
-                        fontSize: 14,
-                        color: Colors.grey,
+                    InkWell(
+                      onTap: () {
+                        final rate =
+                            '1 $fromCurrency = ${numberFormat.format(convertCurrency(1, fromCurrency, toCurrency, rates, ref))} $toCurrency';
+                        Clipboard.setData(ClipboardData(text: rate));
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text('為替レートをコピーしました！'),
+                            duration: Duration(seconds: 2),
+                          ),
+                        );
+                      },
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Text(
+                            '1 $fromCurrency = ${numberFormat.format(convertCurrency(1, fromCurrency, toCurrency, rates, ref))} $toCurrency',
+                            style: const TextStyle(fontSize: 14, color: Colors.grey),
+                          ),
+                          const SizedBox(width: 4),
+                          const Icon(Icons.copy, size: 14, color: Colors.grey),
+                        ],
                       ),
                     ),
                   ],
